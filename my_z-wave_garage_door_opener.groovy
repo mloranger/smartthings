@@ -1,7 +1,8 @@
 /**
  *  Z-Wave Garage Door Opener
  *
- *  Copyright 2014 SmartThings
+ *  Copyright 2015 Mike Loranger
+ *
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -12,9 +13,13 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
+ *	Detail:
+ *	Combines capabilities of a contact sensor, relay, and lock for the Linear GD00Z garage door opener.  Allows ST to use the GD00Z instead of the two separate devices that ST was built
+ *	around for a garage door opener.  Also allows the garage door to be unlocked and locked by opening/closing the garage door.
+ *
  */
 metadata {
-	definition (name: "My Z-Wave Garage Door Opener", namespace: "smartthings", author: "SmartThings") {
+	definition (name: "Linear GD00Z Garage Door Opener", namespace: "mloranger", author: "Mike Loranger") {
 		capability "Actuator"
 		capability "Door Control"
 		capability "Contact Sensor"
@@ -24,6 +29,7 @@ metadata {
   		capability "Switch" 
 		capability "Momentary"
 		capability "Relay Switch"
+        capability "Lock"
 
 
 		fingerprint deviceId: "0x4007", inClusters: "0x98"
@@ -115,32 +121,37 @@ def zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityCommandsSupported
 def zwaveEvent(BarrierOperatorReport cmd) {
 	def result = []
 	def map = [ name: "door" ]
-    def switchMap = [ name: "switch" ]
+    def lockMap = [ name: "lock" ]
     
 	switch (cmd.barrierState) {
 		case BarrierOperatorReport.BARRIER_STATE_CLOSED:
 			map.value = "closed"
+            lockMap.value = "locked"
 			result << createEvent(name: "contact", value: "closed", displayed: false)
             result << createEvent(name: "switch", value: "off", displayed: false)
 			break
 		case BarrierOperatorReport.BARRIER_STATE_UNKNOWN_POSITION_MOVING_TO_CLOSE:
 			map.value = "closing"
+            lockMap.value = "unlocked"
 			break
 		case BarrierOperatorReport.BARRIER_STATE_UNKNOWN_POSITION_STOPPED:
 			map.descriptionText = "$device.displayName door state is unknown"
 			map.value = "unknown"
+            lockMap.value = "unknown"
 			break
 		case BarrierOperatorReport.BARRIER_STATE_UNKNOWN_POSITION_MOVING_TO_OPEN:
 			map.value = "opening"
-			result << createEvent(name: "contact", value: "open", displayed: false)
+            lockMap.value = "unlocked"
 			break
 		case BarrierOperatorReport.BARRIER_STATE_OPEN:
 			map.value = "open"
+            lockMap.value = "unlocked"
 			result << createEvent(name: "contact", value: "open", displayed: false)
             result << createEvent(name: "switch", value: "on", displayed: false)
 			break
 	}
-	result + createEvent(map)
+    
+	result + createEvent(map) + createEvent(lockMap)
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.notificationv3.NotificationReport cmd) {
@@ -243,7 +254,7 @@ def zwaveEvent(physicalgraph.zwave.commands.notificationv3.NotificationReport cm
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.batteryv1.BatteryReport cmd) {
-	def map = [ name: "battery", unit: "%" ]
+    def map = [ name: "battery", unit: "%" ]
 	if (cmd.batteryLevel == 0xFF) {
 		map.value = 1
 		map.descriptionText = "$device.displayName has a low battery"
@@ -287,12 +298,19 @@ def zwaveEvent(physicalgraph.zwave.Command cmd) {
 	createEvent(displayed: false, descriptionText: "$device.displayName: $cmd")
 }
 
+def changeStateAndCheck(requestedBarrierState) {
+    secureSequence([
+		zwave.barrierOperatorV1.barrierOperatorSet(requestedBarrierState: requestedBarrierState),
+		zwave.barrierOperatorV1.barrierOperatorGet()
+	], 15000)
+}
+
 def open() {
-	secure(zwave.barrierOperatorV1.barrierOperatorSet(requestedBarrierState: BarrierOperatorSet.REQUESTED_BARRIER_STATE_OPEN))
+	changeStateAndCheck(BarrierOperatorSet.REQUESTED_BARRIER_STATE_OPEN)
 }
 
 def close() {
-	secure(zwave.barrierOperatorV1.barrierOperatorSet(requestedBarrierState: BarrierOperatorSet.REQUESTED_BARRIER_STATE_CLOSE))
+	changeStateAndCheck(BarrierOperatorSet.REQUESTED_BARRIER_STATE_CLOSE)
 }
 
 
@@ -304,6 +322,13 @@ def poll() {
 	secure(zwave.barrierOperatorV1.barrierOperatorGet())
 }
 
+def lock() {
+	changeStateAndCheck(BarrierOperatorSet.REQUESTED_BARRIER_STATE_CLOSE)
+}
+
+def unlock() {
+	changeStateAndCheck(BarrierOperatorSet.REQUESTED_BARRIER_STATE_OPEN)
+}
 
 def on() {
 	log.debug "on() was called and ignored"
@@ -341,6 +366,6 @@ private secure(physicalgraph.zwave.Command cmd) {
 	zwave.securityV1.securityMessageEncapsulation().encapsulate(cmd).format()
 }
 
-private secureSequence(commands, delay=200) {
+private secureSequence(commands, delay=15000) {
 	delayBetween(commands.collect{ secure(it) }, delay)
 }
